@@ -6,4 +6,5 @@ testing/test_python_labview/python_support/pyEnvSetup.py
 testing/test_phase_plotting/testPhasePlotting_loopSub360.vi
 testing/test_phase_plotting/testPhasePlotting_useWrapAngle.vi
 
-testing/PMUTesting_LabVIEW_MK_modified/measurements/*
+PMUTesting_LabVIEW_MK_modified/measurements/
+
