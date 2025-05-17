@@ -7,4 +7,5 @@ testing/test_phase_plotting/testPhasePlotting_loopSub360.vi
 testing/test_phase_plotting/testPhasePlotting_useWrapAngle.vi
 
 PMUTesting_LabVIEW_MK_modified/measurements/
+PMUtester_LabVIEW_test01/measurements/
 
