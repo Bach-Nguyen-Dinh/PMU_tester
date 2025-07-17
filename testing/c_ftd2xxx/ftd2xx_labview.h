@@ -187,48 +187,29 @@ typedef struct _ft_device_list_info_node {
 } FT_DEVICE_LIST_INFO_NODE;
 
 // Win32 API compatible structures
+// Simplified structures for LabVIEW compatibility
 typedef struct _FTCOMSTAT {
-    DWORD fCtsHold : 1;
-    DWORD fDsrHold : 1;
-    DWORD fRlsdHold : 1;
-    DWORD fXoffHold : 1;
-    DWORD fXoffSent : 1;
-    DWORD fEof : 1;
-    DWORD fTxim : 1;
-    DWORD fReserved : 25;
-    DWORD cbInQue;
-    DWORD cbOutQue;
+    DWORD dwFlags;        // Combined flags (instead of bitfields)
+    DWORD cbInQue;        // Number of bytes in input queue
+    DWORD cbOutQue;       // Number of bytes in output queue
 } FTCOMSTAT, *LPFTCOMSTAT;
 
 typedef struct _FTDCB {
-    DWORD DCBlength;
-    DWORD BaudRate;
-    DWORD fBinary : 1;
-    DWORD fParity : 1;
-    DWORD fOutxCtsFlow : 1;
-    DWORD fOutxDsrFlow : 1;
-    DWORD fDtrControl : 2;
-    DWORD fDsrSensitivity : 1;
-    DWORD fTXContinueOnXoff : 1;
-    DWORD fOutX : 1;
-    DWORD fInX : 1;
-    DWORD fErrorChar : 1;
-    DWORD fNull : 1;
-    DWORD fRtsControl : 2;
-    DWORD fAbortOnError : 1;
-    DWORD fDummy2 : 17;
-    WORD wReserved;
-    WORD XonLim;
-    WORD XoffLim;
-    UCHAR ByteSize;
-    UCHAR Parity;
-    UCHAR StopBits;
-    char XonChar;
-    char XoffChar;
-    char ErrorChar;
-    char EofChar;
-    char EvtChar;
-    WORD wReserved1;
+    DWORD DCBlength;      // sizeof(FTDCB)
+    DWORD BaudRate;       // Baudrate at which running
+    DWORD dwFlags;        // Combined flags (instead of bitfields)
+    WORD wReserved;       // Not currently used
+    WORD XonLim;          // Transmit X-ON threshold
+    WORD XoffLim;         // Transmit X-OFF threshold
+    UCHAR ByteSize;       // Number of bits/byte, 4-8
+    UCHAR Parity;         // 0-4=None,Odd,Even,Mark,Space
+    UCHAR StopBits;       // FT_STOP_BITS_1 or FT_STOP_BITS_2
+    char XonChar;         // Tx and Rx X-ON character
+    char XoffChar;        // Tx and Rx X-OFF character
+    char ErrorChar;       // Error replacement char
+    char EofChar;         // End of Input character
+    char EvtChar;         // Received Event character
+    WORD wReserved1;      // Fill for now.
 } FTDCB, *LPFTDCB;
 
 typedef struct _FTTIMEOUTS {
