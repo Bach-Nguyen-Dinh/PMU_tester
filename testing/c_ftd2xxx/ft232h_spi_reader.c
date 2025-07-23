@@ -51,6 +51,9 @@ static FT_HANDLE ftHandle = NULL;
 static UCHAR OutputBuffer[CMD_BUFFER_SIZE];
 static UCHAR InputBuffer[DATA_BUFFER_SIZE];
 
+#define OUT_PATH "SPIBin.txt"   // Full binary and hex output
+#define CNT_OUT_PATH "CounterOutput.txt"    // Counter output (bits 124-147)
+
 // Function prototypes
 bool SPI_Initialize(void);
 bool SPI_SynchronizeMPSSE(void);
@@ -98,18 +101,14 @@ int main(int argc, char* argv[])
     printf("SPI interface initialized successfully\n");
     
     // Open output files
-    FILE* outputFile = fopen("output.txt", "w");
-    FILE* counterFile = fopen("CounterOutput.txt", "w");
+    FILE* outputFile = fopen(OUT_PATH, "w");
+    FILE* counterFile = fopen(CNT_OUT_PATH, "w");
     
     if (!outputFile || !counterFile) {
         printf("Failed to open output files\n");
         SPI_Close();
         return 1;
     }
-    
-    // Write headers
-    fprintf(outputFile, "Binary Data (160 bits per sample)\n");
-    fprintf(counterFile, "Counter Data (bits 124-147)\n");
     
     // Allocate data buffer
     UCHAR* dataBuffer = (UCHAR*)malloc(batchSize * BYTES_PER_SAMPLE);
@@ -215,7 +214,7 @@ int main(int argc, char* argv[])
     printf("Data rate: %.2f MB/s\n", dataRateMBps);
     printf("Total batches: %d\n", batchCount);
     printf("USB transactions: %d\n", batchCount);
-    printf("\nData written to output.txt and CounterOutput.txt\n");
+    printf("\nData written to files\n");
     
     // Cleanup
     free(dataBuffer);
