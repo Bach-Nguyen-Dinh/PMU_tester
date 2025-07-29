@@ -9,11 +9,9 @@
 #define BYTES_PER_DATA 20  // 160 bits = 20 bytes
 #define OUTPUT_FILE "SPIBin.txt"
 
-// MPSSE Commands for SPI Mode 2 (CPOL=1, CPHA=0)
-#define MPSSE_WRITE_NEG_EDGE    0x01   // Write on negative edge
-#define MPSSE_READ_POS_EDGE     0x20   // Read on positive edge (for Mode 2)
-#define MPSSE_DO_READ           0x20   // Read data
-#define MPSSE_BITMODE           0x02   // Bit mode flag
+// Optimize buffer sizes for high-speed operation
+#define USB_BUFFER_SIZE 65536  // 64KB USB buffer
+#define BATCH_SIZE 100         // Read multiple packets in one operation
 
 // Function to convert byte array to binary string
 void bytes_to_binary_string(unsigned char* bytes, int num_bytes, char* binary_str) {
@@ -26,43 +24,30 @@ void bytes_to_binary_string(unsigned char* bytes, int num_bytes, char* binary_st
     binary_str[bit_index] = '\0';
 }
 
-// Send command and wait for execution
-FT_STATUS send_command(FT_HANDLE ftHandle, unsigned char* buffer, int length) {
+// Send command without error checking for speed
+FT_STATUS send_command_fast(FT_HANDLE ftHandle, unsigned char* buffer, int length) {
     DWORD bytesWritten;
-    FT_STATUS ftStatus = FT_Write(ftHandle, buffer, length, &bytesWritten);
-    if (ftStatus != FT_OK || bytesWritten != length) {
-        return FT_OTHER_ERROR;
-    }
-    return FT_OK;
+    return FT_Write(ftHandle, buffer, length, &bytesWritten);
 }
 
-// Initialize MPSSE mode for SPI
-FT_STATUS initialize_mpsse(FT_HANDLE ftHandle) {
+// Initialize MPSSE mode for SPI - optimized version
+FT_STATUS initialize_mpsse_fast(FT_HANDLE ftHandle) {
     FT_STATUS ftStatus;
     DWORD bytesWritten, bytesRead;
     unsigned char buffer[16];
     
-    // Reset MPSSE
-    ftStatus = FT_SetBitMode(ftHandle, 0x00, 0x00);
-    if (ftStatus != FT_OK) return ftStatus;
+    // Reset and enable MPSSE mode
+    FT_SetBitMode(ftHandle, 0x00, 0x00);
+    FT_SetBitMode(ftHandle, 0x00, 0x02);
+    Sleep(50);
     
-    // Enable MPSSE mode
-    ftStatus = FT_SetBitMode(ftHandle, 0x00, 0x02);
-    if (ftStatus != FT_OK) return ftStatus;
+    // Synchronize MPSSE
+    buffer[0] = 0xAA;
+    FT_Write(ftHandle, buffer, 1, &bytesWritten);
+    buffer[0] = 0xAB;
+    FT_Write(ftHandle, buffer, 1, &bytesWritten);
     
-    Sleep(50); // Allow time for MPSSE to initialize
-    
-    // Synchronize MPSSE by sending bad commands
-    buffer[0] = 0xAA;  // Bad command
-    ftStatus = FT_Write(ftHandle, buffer, 1, &bytesWritten);
-    if (ftStatus != FT_OK) return ftStatus;
-    
-    buffer[0] = 0xAB;  // Bad command  
-    ftStatus = FT_Write(ftHandle, buffer, 1, &bytesWritten);
-    if (ftStatus != FT_OK) return ftStatus;
-    
-    // Read and discard synchronization response
-    Sleep(20);
+    Sleep(10);
     DWORD bytesAvailable;
     FT_GetQueueStatus(ftHandle, &bytesAvailable);
     if (bytesAvailable > 0) {
@@ -76,7 +61,7 @@ FT_STATUS initialize_mpsse(FT_HANDLE ftHandle) {
     buffer[0] = 0x86;  // Set clock divisor command
     buffer[1] = 0x04;  // Divisor low byte (4)
     buffer[2] = 0x00;  // Divisor high byte
-    ftStatus = send_command(ftHandle, buffer, 3);
+    ftStatus = send_command_fast(ftHandle, buffer, 3);
     if (ftStatus != FT_OK) return ftStatus;
     
     // Configure I/O pins for SPI Mode 2 with active-high CS
@@ -85,47 +70,50 @@ FT_STATUS initialize_mpsse(FT_HANDLE ftHandle) {
     buffer[0] = 0x80;  // Set low byte pins command
     buffer[1] = 0x09;  // Value: SCLK=HIGH(bit0=1), CS=HIGH(bit3=1) = 0x09
     buffer[2] = 0x0B;  // Direction: SCLK(0), MOSI(1), CS(3) as outputs = 0x0B
-    ftStatus = send_command(ftHandle, buffer, 3);
+    ftStatus = send_command_fast(ftHandle, buffer, 3);
     
-    return ftStatus;
+    return FT_OK;
 }
 
-// Perform SPI read transaction
-FT_STATUS spi_read_data(FT_HANDLE ftHandle, unsigned char* data, int length) {
+// High-speed batch SPI read operation
+FT_STATUS spi_read_batch(FT_HANDLE ftHandle, unsigned char* data, int num_packets) {
     FT_STATUS ftStatus;
     DWORD bytesWritten, bytesRead;
-    unsigned char buffer[32];
-    int bufferIndex = 0;
+    unsigned char commandBuffer[1024];  // Large command buffer
+    int cmdIndex = 0;
+    int totalBytes = num_packets * BYTES_PER_DATA;
     
-    // Assert CS (set LOW for active-high operation)
-    buffer[bufferIndex++] = 0x80;  // Set low byte pins
-    buffer[bufferIndex++] = 0x01;  // CS=LOW(bit3=0), SCLK=HIGH(bit0=1) = 0x01
-    buffer[bufferIndex++] = 0x0B;  // Direction
+    // Build batch command for multiple packets
+    for (int i = 0; i < num_packets; i++) {
+        // Assert CS (active high - set CS LOW to activate)
+        commandBuffer[cmdIndex++] = 0x80;  // Set pins
+        commandBuffer[cmdIndex++] = 0x01;  // CS=LOW, SCLK=HIGH
+        commandBuffer[cmdIndex++] = 0x0B;  // Direction
+        
+        // Read command for SPI Mode 2 (falling edge)
+        commandBuffer[cmdIndex++] = 0x24;  // Read on falling edge
+        commandBuffer[cmdIndex++] = (BYTES_PER_DATA - 1) & 0xFF;
+        commandBuffer[cmdIndex++] = ((BYTES_PER_DATA - 1) >> 8) & 0xFF;
+        
+        // Deassert CS (set CS HIGH to deactivate)
+        commandBuffer[cmdIndex++] = 0x80;  // Set pins
+        commandBuffer[cmdIndex++] = 0x09;  // CS=HIGH, SCLK=HIGH  
+        commandBuffer[cmdIndex++] = 0x0B;  // Direction
+    }
     
-    // SPI Mode 2: CPOL=1, CPHA=0 - Read on falling edge, clock idles high
-    buffer[bufferIndex++] = 0x20;  // Read bytes on positive clock edge
-    buffer[bufferIndex++] = (length - 1) & 0xFF;        // Length low byte
-    buffer[bufferIndex++] = ((length - 1) >> 8) & 0xFF; // Length high byte
+    // Send immediate command
+    commandBuffer[cmdIndex++] = 0x87;
     
-    // Deassert CS (set HIGH)
-    buffer[bufferIndex++] = 0x80;  // Set low byte pins
-    buffer[bufferIndex++] = 0x09;  // CS=HIGH(bit3=1), SCLK=HIGH(bit0=1) = 0x09
-    buffer[bufferIndex++] = 0x0B;  // Direction
-    
-    // Send immediate command to execute
-    buffer[bufferIndex++] = 0x87;
-    
-    // Send command sequence
-    ftStatus = FT_Write(ftHandle, buffer, bufferIndex, &bytesWritten);
+    // Send all commands at once
+    ftStatus = FT_Write(ftHandle, commandBuffer, cmdIndex, &bytesWritten);
     if (ftStatus != FT_OK) return ftStatus;
     
-    // Wait for data and read response
-    Sleep(2); // Small delay for data to be available
-    ftStatus = FT_Read(ftHandle, data, length, &bytesRead);
+    // Read all data at once
+    ftStatus = FT_Read(ftHandle, data, totalBytes, &bytesRead);
     if (ftStatus != FT_OK) return ftStatus;
     
-    if (bytesRead != length) {
-        printf("Warning: Expected %d bytes, got %d bytes\n", length, bytesRead);
+    if (bytesRead != totalBytes) {
+        printf("Warning: Expected %d bytes, got %d bytes\n", totalBytes, bytesRead);
         return FT_OTHER_ERROR;
     }
     
@@ -135,131 +123,174 @@ FT_STATUS spi_read_data(FT_HANDLE ftHandle, unsigned char* data, int length) {
 int main() {
     FT_HANDLE ftHandle;
     FT_STATUS ftStatus;
-    unsigned char spi_data[BYTES_PER_DATA];
-    char binary_string[BITS_PER_DATA + 1];
     FILE* output_file;
-    int i;
     DWORD numDevices;
     
-    printf("FT232H SPI Master Receiver Program (Direct FTD2XX)\n");
-    printf("==================================================\n");
-    printf("Receiving %d packets of %d bits each\n", DATA_COUNT, BITS_PER_DATA);
-    printf("SPI Mode: 2, CS Active High, Clock Rate: 6 MHz\n\n");
+    // Allocate large buffer for all data in memory
+    unsigned char* all_data = malloc(DATA_COUNT * BYTES_PER_DATA);
+    char* all_binary_strings = malloc(DATA_COUNT * (BITS_PER_DATA + 2)); // +2 for newline and null
     
-    // Check for FTDI devices
+    if (!all_data || !all_binary_strings) {
+        printf("Error: Failed to allocate memory\n");
+        return -1;
+    }
+
+    printf("SPI Mode: 2, CS Active High, Clock Rate: 6 MHz\n");
+    
+    // Find FTDI devices
     ftStatus = FT_CreateDeviceInfoList(&numDevices);
     if (ftStatus != FT_OK || numDevices == 0) {
-        printf("Error: No FTDI devices found (error code: %d)\n", ftStatus);
+        printf("Error: No FTDI devices found\n");
+        free(all_data);
+        free(all_binary_strings);
         return -1;
     }
     
-    printf("Found %d FTDI device(s)\n", numDevices);
-    
-    // Open the FT232H device (not the USB-Blaster)
-    // Look for FT232H specifically
+    // Find FT232H device
     int ft232h_index = -1;
     for (DWORD i = 0; i < numDevices; i++) {
         char description[256];
-        FT_STATUS status = FT_GetDeviceInfoDetail(i, NULL, NULL, NULL, NULL, NULL, description, NULL);
-        if (status == FT_OK && strstr(description, "FT232H") != NULL) {
-            ft232h_index = i;
-            printf("Found FT232H at device index %d\n", i);
-            break;
+        if (FT_GetDeviceInfoDetail(i, NULL, NULL, NULL, NULL, NULL, description, NULL) == FT_OK) {
+            if (strstr(description, "FT232H") != NULL) {
+                ft232h_index = i;
+                printf("Found FT232H at device index %d\n", i);
+                break;
+            }
         }
     }
     
     if (ft232h_index == -1) {
         printf("Error: FT232H device not found\n");
+        free(all_data);
+        free(all_binary_strings);
         return -1;
     }
     
+    // Open device
     ftStatus = FT_Open(ft232h_index, &ftHandle);
     if (ftStatus != FT_OK) {
-        printf("Error: Failed to open FTDI device (error code: %d)\n", ftStatus);
+        printf("Error: Failed to open FT232H device\n");
+        free(all_data);
+        free(all_binary_strings);
         return -1;
     }
     
-    printf("FTDI device opened successfully\n");
+    printf("FT232H opened successfully\n");
     
-    // Configure device timeouts and latency
-    ftStatus = FT_SetLatencyTimer(ftHandle, 1);  // 1ms latency
-    if (ftStatus != FT_OK) {
-        printf("Error: Failed to set latency timer\n");
-        FT_Close(ftHandle);
-        return -1;
-    }
-    
-    ftStatus = FT_SetTimeouts(ftHandle, 5000, 5000);  // 5 second timeouts
-    if (ftStatus != FT_OK) {
-        printf("Error: Failed to set timeouts\n");
-        FT_Close(ftHandle);
-        return -1;
-    }
-    
-    // Purge buffers
+    // Optimize device settings for high speed
+    FT_SetUSBParameters(ftHandle, USB_BUFFER_SIZE, USB_BUFFER_SIZE);  // Large USB buffers
+    FT_SetLatencyTimer(ftHandle, 1);        // Minimum latency (1ms)
+    FT_SetTimeouts(ftHandle, 1000, 1000);   // Reasonable timeouts
     FT_Purge(ftHandle, FT_PURGE_RX | FT_PURGE_TX);
     
-    // Initialize MPSSE for SPI
-    ftStatus = initialize_mpsse(ftHandle);
+    // Initialize MPSSE
+    ftStatus = initialize_mpsse_fast(ftHandle);
     if (ftStatus != FT_OK) {
-        printf("Error: Failed to initialize MPSSE (error code: %d)\n", ftStatus);
+        printf("Error: Failed to initialize MPSSE\n");
         FT_Close(ftHandle);
+        free(all_data);
+        free(all_binary_strings);
         return -1;
     }
     
-    printf("MPSSE initialized for SPI Mode 2\n");
+    printf("MPSSE initialized for high-speed operation\n");
+    printf("Starting high-speed data reception...\n\n");
     
-    // Open output file
-    output_file = fopen(OUTPUT_FILE, "w");
-    if (!output_file) {
-        printf("Error: Cannot create output file %s\n", OUTPUT_FILE);
-        FT_Close(ftHandle);
-        return -1;
-    }
+    // Record start time
+    LARGE_INTEGER frequency, start, end;
+    QueryPerformanceFrequency(&frequency);
+    QueryPerformanceCounter(&start);
     
-    printf("Output file opened: %s\n", OUTPUT_FILE);
-    printf("Starting data reception...\n\n");
+    int packets_received = 0;
+    int batch_size = BATCH_SIZE;
     
-    // Main data reception loop
-    for (i = 0; i < DATA_COUNT; i++) {
-        // Clear the data buffer
-        memset(spi_data, 0, BYTES_PER_DATA);
+    // Main high-speed reception loop
+    while (packets_received < DATA_COUNT) {
+        // Adjust batch size for remaining packets
+        if (packets_received + batch_size > DATA_COUNT) {
+            batch_size = DATA_COUNT - packets_received;
+        }
         
-        // Perform SPI read operation
-        ftStatus = spi_read_data(ftHandle, spi_data, BYTES_PER_DATA);
+        // Read batch of packets
+        ftStatus = spi_read_batch(ftHandle, 
+                                 all_data + (packets_received * BYTES_PER_DATA), 
+                                 batch_size);
         
         if (ftStatus != FT_OK) {
-            printf("Error: SPI read failed (packet %d, error code: %d)\n", i + 1, ftStatus);
+            printf("Error: Batch read failed at packet %d\n", packets_received + 1);
             break;
         }
         
-        // Convert bytes to binary string
-        bytes_to_binary_string(spi_data, BYTES_PER_DATA, binary_string);
+        packets_received += batch_size;
         
-        // Write to file
-        fprintf(output_file, "%s", binary_string);
-        if (i < DATA_COUNT - 1) {
-            fprintf(output_file, "\n");  // Space separator except for last entry
+        // Progress indicator (less frequent to avoid slowing down)
+        if (packets_received % 1000 == 0) {
+            printf("Received %d/%d packets (%.1f%%)\n", 
+                   packets_received, DATA_COUNT, 
+                   ((float)packets_received / DATA_COUNT) * 100.0);
         }
         
-        // Progress indicator
-        if ((i + 1) % 1000 == 0) {
-            printf("Received %d/%d packets (%.1f%%)\n", i + 1, DATA_COUNT, 
-                   ((float)(i + 1) / DATA_COUNT) * 100.0);
-        }
-        
-        // Small delay to match slave transmission rate (10kHz = 100µs period)
-        Sleep(1);  // 1ms delay
+        // No sleep - go as fast as possible!
     }
     
+    // Record end time
+    QueryPerformanceCounter(&end);
+    double elapsed = (double)(end.QuadPart - start.QuadPart) / frequency.QuadPart;
+    
     printf("\nData reception completed!\n");
-    printf("Total packets received: %d\n", i);
+    printf("Total packets received: %d\n", packets_received);
+    printf("Reception time: %.3f seconds\n", elapsed);
+    printf("Effective rate: %.1f packets/second\n", packets_received / elapsed);
+    
+    // Now convert all data to binary strings in memory
+    printf("Converting data to binary format...\n");
+    
+    QueryPerformanceCounter(&start);
+    
+    char* string_ptr = all_binary_strings;
+    for (int i = 0; i < packets_received; i++) {
+        bytes_to_binary_string(all_data + (i * BYTES_PER_DATA), BYTES_PER_DATA, string_ptr);
+        string_ptr += BITS_PER_DATA;
+        *string_ptr++ = '\n';  // Add newline
+    }
+    *(string_ptr - 1) = '\0';  // Replace last newline with null terminator
+    
+    QueryPerformanceCounter(&end);
+    double conversion_time = (double)(end.QuadPart - start.QuadPart) / frequency.QuadPart;
+    printf("Conversion time: %.3f seconds\n", conversion_time);
+    
+    // Write all data to file at once
+    printf("Writing data to file...\n");
+    
+    QueryPerformanceCounter(&start);
+    
+    output_file = fopen(OUTPUT_FILE, "w");
+    if (!output_file) {
+        printf("Error: Cannot create output file\n");
+        FT_Close(ftHandle);
+        free(all_data);
+        free(all_binary_strings);
+        return -1;
+    }
+    
+    fwrite(all_binary_strings, 1, strlen(all_binary_strings), output_file);
+    fclose(output_file);
+    
+    QueryPerformanceCounter(&end);
+    double write_time = (double)(end.QuadPart - start.QuadPart) / frequency.QuadPart;
+    printf("File write time: %.3f seconds\n", write_time);
     
     // Cleanup
-    fclose(output_file);
     FT_Close(ftHandle);
+    free(all_data);
+    free(all_binary_strings);
     
-    printf("Program finished successfully. Data saved to %s\n", OUTPUT_FILE);
+    printf("\n=== Performance Summary ===\n");
+    printf("Total time: %.3f seconds\n", elapsed + conversion_time + write_time);
+    printf("Reception: %.3f seconds (%.1f%%)\n", elapsed, (elapsed / (elapsed + conversion_time + write_time)) * 100);
+    printf("Conversion: %.3f seconds (%.1f%%)\n", conversion_time, (conversion_time / (elapsed + conversion_time + write_time)) * 100);
+    printf("File write: %.3f seconds (%.1f%%)\n", write_time, (write_time / (elapsed + conversion_time + write_time)) * 100);
+    printf("Data saved to %s\n", OUTPUT_FILE);
     
     return 0;
 }
